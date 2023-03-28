@@ -1,3 +1,4 @@
+use clap::{arg, App};
 use error_chain::error_chain;
 use fancy_regex::Regex;
 use glob::{glob_with, MatchOptions};
@@ -8,6 +9,15 @@ use std::{
     process::{Command, Stdio},
 };
 
+#[derive(Debug)]
+pub struct StdFloatMathUsedError;
+impl std::fmt::Display for StdFloatMathUsedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Std float math used in this crate.")
+    }
+}
+impl std::error::Error for StdFloatMathUsedError {}
+
 error_chain! {
     foreign_links {
         Glob(glob::GlobError);
@@ -15,6 +25,7 @@ error_chain! {
         Io(std::io::Error);
         Regex(regex::Error);
         Utf8(std::string::FromUtf8Error);
+        StdFloatMath(StdFloatMathUsedError);
     }
 }
 
@@ -24,22 +35,38 @@ enum EmitType {
     ASM,
 }
 
-const TEMP_BUILD_DIR: &str = "temp_for_test";
+#[derive(Clone, Debug)]
+struct CmdLineArgs {
+    pub tested_crate_path: PathBuf,
+    pub tested_package_name: String,
+}
+
+const TEMP_BUILD_DIR: &str = "temp_build_dir";
 const BUILD_TARGET: &str = "x86_64-pc-windows-msvc";
 
-fn gen_asm_or_mir(
-    this_proj_dir: &Path,
-    tested_proj_dir: &Path,
+fn clear_temp_dir(this_crate_dir: &Path) -> PathBuf {
+    let build_dir = this_crate_dir.join(TEMP_BUILD_DIR);
+    if build_dir.exists() {
+        std::fs::remove_dir_all(build_dir.as_path())
+            .expect(&format!("fail to remove {}", build_dir.display()));
+    }
+    build_dir
+}
+
+fn gen_compiled_file(
+    this_crate_dir: &Path,
+    tested_crate_dir: &Path,
     tested_features: &Vec<&str>,
     emit_type: EmitType,
 ) {
-    assert!(this_proj_dir.is_absolute());
-    let build_dir = this_proj_dir.join(TEMP_BUILD_DIR);
-    if build_dir.exists() {
-        std::fs::remove_dir_all(build_dir.clone()).unwrap();
-    }
+    assert!(this_crate_dir.is_absolute());
+    assert!(tested_crate_dir.is_absolute());
 
-    std::env::set_current_dir(tested_proj_dir).unwrap();
+    let build_dir = clear_temp_dir(this_crate_dir);
+    std::env::set_current_dir(tested_crate_dir).expect(&format!(
+        "fail to set current dir to {}",
+        tested_crate_dir.display()
+    ));
 
     let mut cmd = Command::new("cargo");
     cmd.arg("rustc");
@@ -54,25 +81,38 @@ fn gen_asm_or_mir(
         EmitType::ASM => "asm",
         EmitType::MIR => "mir",
     });
+    println!("Rustc emit command: {:?}", cmd);
+
     cmd.stdout(Stdio::piped()).spawn().unwrap().wait().unwrap();
 
-    std::env::set_current_dir(this_proj_dir).unwrap();
+    std::env::set_current_dir(this_crate_dir).expect(&format!(
+        "fail to set current dir to {}",
+        this_crate_dir.display()
+    ));
 }
 
-fn asm_or_mir_file(this_proj_dir: &Path, emit_type: EmitType) -> Result<PathBuf> {
-    let emit_file_pat = this_proj_dir
+fn compiled_file(
+    this_crate_dir: &Path,
+    emit_type: EmitType,
+    test_crate_name: &str,
+) -> Result<PathBuf> {
+    assert!(this_crate_dir.is_absolute());
+
+    let emit_file_pat = this_crate_dir
         .join(TEMP_BUILD_DIR)
         .join(BUILD_TARGET)
         .join("debug")
         .join("deps")
         .join(
-            String::from("glam_motphys-*.")
+            String::from(test_crate_name)
+                + "*."
                 + match emit_type {
                     EmitType::ASM => "s",
                     EmitType::MIR => "mir",
                 },
         );
-    let mut file_vec: Vec<PathBuf> = Vec::new();
+
+    let mut files: Vec<PathBuf> = Vec::new();
     for entry in glob_with(
         emit_file_pat.to_str().unwrap(),
         MatchOptions {
@@ -80,109 +120,144 @@ fn asm_or_mir_file(this_proj_dir: &Path, emit_type: EmitType) -> Result<PathBuf>
             ..Default::default()
         },
     )? {
-        file_vec.push(entry?);
+        files.push(entry?);
     }
-    assert!(file_vec.len() == 1);
-    Ok(file_vec[0].clone())
+    assert!(files.len() == 1);
+
+    Ok(files[0].clone())
 }
 
-fn test_std_math_used(std_math_patterns: Regex, tested_file: &Path) -> Result<bool> {
+fn std_math_used(std_math_patterns: Regex, tested_file: &Path) -> Result<bool> {
     let content = BufReader::new(File::open(tested_file)?);
     let mut std_math_used = false;
     for line in content.lines() {
         let line_content = line?;
         if !std_math_patterns.captures(&line_content).unwrap().is_none() {
+            if std_math_used == false {
+                println!("std math usage found in: {}", tested_file.display());
+            }
             std_math_used = true;
-            println!("std math find: {}", line_content);
+            println!("std math found: {}", line_content);
         };
     }
     Ok(std_math_used)
 }
 
 fn test_asm_or_mir(
-    this_proj_dir: &Path,
-    tested_proj_dir: &Path,
+    this_crate_dir: &Path,
+    tested_crate_dir: &Path,
+    test_crate_name: &str,
     tested_features: &Vec<&str>,
     emit_type: EmitType,
     std_math_patterns: Regex,
 ) -> Result<bool> {
-    gen_asm_or_mir(this_proj_dir, tested_proj_dir, tested_features, emit_type);
-    let build_res_file = asm_or_mir_file(this_proj_dir, emit_type)?;
-    let build_dir = this_proj_dir.join(TEMP_BUILD_DIR);
-    println!("detect std math usage in {}", build_res_file.display());
-    let res = test_std_math_used(std_math_patterns, &build_res_file);
-    if build_dir.exists() {
-        std::fs::remove_dir_all(build_dir.clone())?;
-    }
+    gen_compiled_file(this_crate_dir, tested_crate_dir, tested_features, emit_type);
+    let compiled_file = compiled_file(this_crate_dir, emit_type, test_crate_name)?;
+    let res = std_math_used(std_math_patterns, &compiled_file);
+    clear_temp_dir(this_crate_dir);
     res
+}
+
+fn parse_args() -> CmdLineArgs {
+    let matches = App::new("NostdFloatMathMonitorApp")
+        .version("0.0.2")
+        .author("liuxiaonan")
+        .about("Detect if std float math function is used in your crate")
+        .arg(arg!(-p --path <PATH> "Path of crate you want to test"))
+        .get_matches();
+
+    let this_crate_path = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tested_crate_path = Path::new(matches.value_of("path").unwrap());
+    let tested_crate_absolute_path = if !Path::new(tested_crate_path).is_absolute() {
+        this_crate_path
+    } else {
+        Path::new("")
+    };
+    let tested_crate_absolute_path = tested_crate_absolute_path.join(Path::new(tested_crate_path));
+    assert!(
+        tested_crate_absolute_path.exists(),
+        "path not exists: {}",
+        tested_crate_absolute_path.display()
+    );
+
+    let tested_package =
+        cargo_toml::Manifest::from_path(tested_crate_absolute_path.join("Cargo.toml"))
+            .unwrap()
+            .package()
+            .name
+            .clone();
+
+    CmdLineArgs {
+        tested_crate_path: tested_crate_absolute_path,
+        tested_package_name: tested_package,
+    }
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn main() -> Result<()> {
-    use clap::App;
+    use error_chain::{ChainedError, State};
 
-    let matches = App::new("NostdFloatMathMonitorApp")
-        .version("0.0.1")
-        .author("liuxiaonan")
-        .about("XXX!")
-        .args_from_usage("-p, --path=[FILE] 'Target crate you want to test'")
-        .get_matches();
-
-    let tested_project_dir = if let Some(f) = matches.value_of("path") {
-        println!("path : {}", f);
-        f
-    } else {
-        panic!()
-    };
+    let args = parse_args();
+    let this_proj_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tested_features = vec![];
 
     let mir_pattern: Regex = Regex::new(
             r"std::(f32|f64)::<impl \1>::(abs|abs_sub|acos|acosh|asin|asinh|atan|atan2|atanh|cbrt|ceil|copysign|cos|cosh|div_euclid|exp|exp2|exp_m1|floor|fract|hypot|ln|ln_1p|log|log10|log2|mul_add|powf|powi|rem_euclid|round|signum|sin|sin_cos|sinh|sqrt|tan|tanh|trunc)"
         )
         .unwrap();
-
     let asm_pattern: Regex = Regex::new(
             r"std::(f32|f64)::impl\$[0-9]+::(abs|abs_sub|acos|acosh|asin|asinh|atan|atan2|atanh|cbrt|ceil|copysign|cos|cosh|div_euclid|exp|exp2|exp_m1|floor|fract|hypot|ln|ln_1p|log|log10|log2|mul_add|powf|powi|rem_euclid|round|signum|sin|sin_cos|sinh|sqrt|tan|tanh|trunc)"
         )
         .unwrap();
 
-    let this_proj_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let tested_proj_dir = Path::new(tested_project_dir);
-    let tested_features = vec!["std"];
-
     let std_math_used_in_mir = test_asm_or_mir(
         &this_proj_dir,
-        tested_proj_dir,
+        &args.tested_crate_path,
+        &args.tested_package_name,
         &tested_features,
         EmitType::MIR,
         mir_pattern,
-    );
+    )
+    .unwrap();
 
     let std_math_used_in_asm = test_asm_or_mir(
         &this_proj_dir,
-        tested_proj_dir,
+        &args.tested_crate_path,
+        &args.tested_package_name,
         &tested_features,
         EmitType::ASM,
         asm_pattern,
-    );
+    )
+    .unwrap();
 
-    if std_math_used_in_mir.unwrap() {
-        println!("std math used in mir, non deterministic");
+    if std_math_used_in_mir {
+        println!("std math used in asm, non deterministic");
     } else {
         println!("Ok, std math not used in mir");
     }
 
-    if std_math_used_in_asm.unwrap() {
-        println!("std math used in asm, non deterministic");
+    if std_math_used_in_asm {
+        println!("std math used in mir, non deterministic");
     } else {
         println!("Ok, std math not used in asm");
     }
 
-    Ok(())
+    if std_math_used_in_asm || std_math_used_in_mir {
+        Err(Error::new(
+            ErrorKind::StdFloatMath(StdFloatMathUsedError),
+            State::default(),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn main() -> Result<()> {
     println!("Only windows and macos is supported");
 
-    Ok(())
+    Err(Error::new(
+        ErrorKind::StdFloatMath(StdFloatMathUsedError),
+        State::default(),
+    ))
 }
