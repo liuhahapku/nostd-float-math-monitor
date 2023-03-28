@@ -1,4 +1,4 @@
-use clap::{arg, App};
+use clap::{arg, App, Arg};
 use error_chain::error_chain;
 use fancy_regex::Regex;
 use glob::{glob_with, MatchOptions};
@@ -31,14 +31,15 @@ error_chain! {
 
 #[derive(Clone, Copy, Debug)]
 enum EmitType {
-    MIR,
-    ASM,
+    Mir,
+    Asm,
 }
 
 #[derive(Clone, Debug)]
 struct CmdLineArgs {
     pub tested_crate_path: PathBuf,
     pub tested_package_name: String,
+    pub tested_features: Vec<String>,
 }
 
 const TEMP_BUILD_DIR: &str = "temp_build_dir";
@@ -48,7 +49,7 @@ fn clear_temp_dir(this_crate_dir: &Path) -> PathBuf {
     let build_dir = this_crate_dir.join(TEMP_BUILD_DIR);
     if build_dir.exists() {
         std::fs::remove_dir_all(build_dir.as_path())
-            .expect(&format!("fail to remove {}", build_dir.display()));
+            .unwrap_or_else(|_| panic!("fail to remove {}", build_dir.display()));
     }
     build_dir
 }
@@ -56,17 +57,15 @@ fn clear_temp_dir(this_crate_dir: &Path) -> PathBuf {
 fn gen_compiled_file(
     this_crate_dir: &Path,
     tested_crate_dir: &Path,
-    tested_features: &Vec<&str>,
+    tested_features: &Vec<String>,
     emit_type: EmitType,
 ) {
     assert!(this_crate_dir.is_absolute());
     assert!(tested_crate_dir.is_absolute());
 
     let build_dir = clear_temp_dir(this_crate_dir);
-    std::env::set_current_dir(tested_crate_dir).expect(&format!(
-        "fail to set current dir to {}",
-        tested_crate_dir.display()
-    ));
+    std::env::set_current_dir(tested_crate_dir)
+        .unwrap_or_else(|_| panic!("fail to set current dir to {}", tested_crate_dir.display()));
 
     let mut cmd = Command::new("cargo");
     cmd.arg("rustc");
@@ -78,17 +77,15 @@ fn gen_compiled_file(
     cmd.arg("--target-dir").arg(build_dir);
     cmd.arg("--target").arg(BUILD_TARGET);
     cmd.arg("--").arg("--emit").arg(match emit_type {
-        EmitType::ASM => "asm",
-        EmitType::MIR => "mir",
+        EmitType::Asm => "asm",
+        EmitType::Mir => "mir",
     });
-    println!("Rustc emit command: {:?}", cmd);
+    println!("Rustc emit command: {cmd:?}");
 
     cmd.stdout(Stdio::piped()).spawn().unwrap().wait().unwrap();
 
-    std::env::set_current_dir(this_crate_dir).expect(&format!(
-        "fail to set current dir to {}",
-        this_crate_dir.display()
-    ));
+    std::env::set_current_dir(this_crate_dir)
+        .unwrap_or_else(|_| panic!("fail to set current dir to {}", this_crate_dir.display()));
 }
 
 fn compiled_file(
@@ -107,8 +104,8 @@ fn compiled_file(
             String::from(test_crate_name)
                 + "*."
                 + match emit_type {
-                    EmitType::ASM => "s",
-                    EmitType::MIR => "mir",
+                    EmitType::Asm => "s",
+                    EmitType::Mir => "mir",
                 },
         );
 
@@ -132,12 +129,12 @@ fn std_math_used(std_math_patterns: Regex, tested_file: &Path) -> Result<bool> {
     let mut std_math_used = false;
     for line in content.lines() {
         let line_content = line?;
-        if !std_math_patterns.captures(&line_content).unwrap().is_none() {
-            if std_math_used == false {
+        if std_math_patterns.captures(&line_content).unwrap().is_some() {
+            if !std_math_used {
                 println!("std math usage found in: {}", tested_file.display());
             }
             std_math_used = true;
-            println!("std math found: {}", line_content);
+            println!("std math found: {line_content}");
         };
     }
     Ok(std_math_used)
@@ -147,7 +144,7 @@ fn test_asm_or_mir(
     this_crate_dir: &Path,
     tested_crate_dir: &Path,
     test_crate_name: &str,
-    tested_features: &Vec<&str>,
+    tested_features: &Vec<String>,
     emit_type: EmitType,
     std_math_patterns: Regex,
 ) -> Result<bool> {
@@ -164,6 +161,12 @@ fn parse_args() -> CmdLineArgs {
         .author("liuxiaonan")
         .about("Detect if std float math function is used in your crate")
         .arg(arg!(-p --path <PATH> "Path of crate you want to test"))
+        .arg(
+            Arg::with_name("features")
+                .short('f')
+                .action(clap::ArgAction::Set)
+                .help("Features you want to test"),
+        )
         .get_matches();
 
     let this_crate_path = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -187,9 +190,16 @@ fn parse_args() -> CmdLineArgs {
             .name
             .clone();
 
+    let features = matches
+        .get_many::<String>("features")
+        .unwrap_or_default()
+        .cloned()
+        .collect();
+
     CmdLineArgs {
         tested_crate_path: tested_crate_absolute_path,
         tested_package_name: tested_package,
+        tested_features: features,
     }
 }
 
@@ -199,7 +209,7 @@ fn main() -> Result<()> {
 
     let args = parse_args();
     let this_proj_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let tested_features = vec![];
+    let tested_features = args.tested_features;
 
     let mir_pattern: Regex = Regex::new(
             r"std::(f32|f64)::<impl \1>::(abs|abs_sub|acos|acosh|asin|asinh|atan|atan2|atanh|cbrt|ceil|copysign|cos|cosh|div_euclid|exp|exp2|exp_m1|floor|fract|hypot|ln|ln_1p|log|log10|log2|mul_add|powf|powi|rem_euclid|round|signum|sin|sin_cos|sinh|sqrt|tan|tanh|trunc)"
@@ -211,35 +221,35 @@ fn main() -> Result<()> {
         .unwrap();
 
     let std_math_used_in_mir = test_asm_or_mir(
-        &this_proj_dir,
+        this_proj_dir,
         &args.tested_crate_path,
         &args.tested_package_name,
         &tested_features,
-        EmitType::MIR,
+        EmitType::Mir,
         mir_pattern,
     )
     .unwrap();
 
     let std_math_used_in_asm = test_asm_or_mir(
-        &this_proj_dir,
+        this_proj_dir,
         &args.tested_crate_path,
         &args.tested_package_name,
         &tested_features,
-        EmitType::ASM,
+        EmitType::Asm,
         asm_pattern,
     )
     .unwrap();
 
     if std_math_used_in_mir {
-        println!("std math used in asm, non deterministic");
+        println!("std math found in asm, non deterministic");
     } else {
-        println!("Ok, std math not used in mir");
+        println!("Ok, std math not found in mir");
     }
 
     if std_math_used_in_asm {
-        println!("std math used in mir, non deterministic");
+        println!("std math found in mir, non deterministic");
     } else {
-        println!("Ok, std math not used in asm");
+        println!("Ok, std math not found in asm");
     }
 
     if std_math_used_in_asm || std_math_used_in_mir {
