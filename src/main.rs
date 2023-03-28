@@ -119,7 +119,22 @@ fn test_asm_or_mir(
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn main() -> Result<()> {
-    const TESTED_PROJECT_DIR: &str = "../";
+    use clap::App;
+
+    let matches = App::new("NostdFloatMathMonitorApp")
+        .version("0.0.1")
+        .author("liuxiaonan")
+        .about("XXX!")
+        .args_from_usage("-p, --path=[FILE] 'Target crate you want to test'")
+        .get_matches();
+
+    let tested_project_dir = if let Some(f) = matches.value_of("path") {
+        println!("path : {}", f);
+        f
+    } else {
+        panic!()
+    };
+
     let mir_pattern: Regex = Regex::new(
             r"std::(f32|f64)::<impl \1>::(abs|abs_sub|acos|acosh|asin|asinh|atan|atan2|atanh|cbrt|ceil|copysign|cos|cosh|div_euclid|exp|exp2|exp_m1|floor|fract|hypot|ln|ln_1p|log|log10|log2|mul_add|powf|powi|rem_euclid|round|signum|sin|sin_cos|sinh|sqrt|tan|tanh|trunc)"
         )
@@ -130,8 +145,8 @@ fn main() -> Result<()> {
         )
         .unwrap();
 
-    let this_proj_dir = std::env::current_dir()?;
-    let tested_proj_dir = Path::new(TESTED_PROJECT_DIR);
+    let this_proj_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tested_proj_dir = Path::new(tested_project_dir);
     let tested_features = vec!["std"];
 
     let std_math_used_in_mir = test_asm_or_mir(
