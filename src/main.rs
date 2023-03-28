@@ -155,7 +155,7 @@ fn test_asm_or_mir(
     res
 }
 
-fn parse_args() -> CmdLineArgs {
+fn parse_args(current_dir: &Path) -> CmdLineArgs {
     let matches = App::new("NostdFloatMathMonitorApp")
         .version("0.0.2")
         .author("liuxiaonan")
@@ -164,15 +164,15 @@ fn parse_args() -> CmdLineArgs {
         .arg(
             Arg::with_name("features")
                 .short('f')
+                .long("features")
                 .action(clap::ArgAction::Set)
                 .help("Features you want to test"),
         )
         .get_matches();
 
-    let this_crate_path = Path::new(env!("CARGO_MANIFEST_DIR"));
     let tested_crate_path = Path::new(matches.value_of("path").unwrap());
     let tested_crate_absolute_path = if !Path::new(tested_crate_path).is_absolute() {
-        this_crate_path
+        current_dir
     } else {
         Path::new("")
     };
@@ -207,8 +207,8 @@ fn parse_args() -> CmdLineArgs {
 fn main() -> Result<()> {
     use error_chain::{ChainedError, State};
 
-    let args = parse_args();
-    let this_proj_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let current_dir = std::env::current_dir()?;
+    let args = parse_args(&current_dir);
     let tested_features = args.tested_features;
 
     let mir_pattern: Regex = Regex::new(
@@ -221,7 +221,7 @@ fn main() -> Result<()> {
         .unwrap();
 
     let std_math_used_in_mir = test_asm_or_mir(
-        this_proj_dir,
+        &current_dir,
         &args.tested_crate_path,
         &args.tested_package_name,
         &tested_features,
@@ -231,7 +231,7 @@ fn main() -> Result<()> {
     .unwrap();
 
     let std_math_used_in_asm = test_asm_or_mir(
-        this_proj_dir,
+        &current_dir,
         &args.tested_crate_path,
         &args.tested_package_name,
         &tested_features,
