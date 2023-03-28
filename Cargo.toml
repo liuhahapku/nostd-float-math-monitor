@@ -2,6 +2,14 @@
 name = "check-no-std-math"
 version = "0.0.1"
 edition = "2021"
+authors = ["Liuxiaonan <xiaonan.liu@motphys.com>"]
+license = "MIT"
+description = "A tool to test if std float math functions are used, which can corrupt crossplatform deterministic"
+readme = "README.md"
+homepage = "https://github.com/liuhahapku/nostd-float-math-monitor"
+repository = "https://github.com/liuhahapku/nostd-float-math-monitor"
+keywords = ["std", "float", "math", "detect", "deterministic"]
+categories = ["command-line-utilities"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
