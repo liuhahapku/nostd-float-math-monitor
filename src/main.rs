@@ -241,13 +241,13 @@ fn main() -> Result<()> {
     .unwrap();
 
     if std_math_used_in_mir {
-        println!("std math found in asm, non deterministic");
+        println!("std math found in mir, non deterministic");
     } else {
         println!("Ok, std math not found in mir");
     }
 
     if std_math_used_in_asm {
-        println!("std math found in mir, non deterministic");
+        println!("std math found in asm, non deterministic");
     } else {
         println!("Ok, std math not found in asm");
     }
