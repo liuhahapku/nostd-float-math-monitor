@@ -1,3 +1,4 @@
+use chrono::Utc;
 use clap::{arg, App, Arg};
 use error_chain::error_chain;
 use fancy_regex::Regex;
@@ -45,8 +46,17 @@ struct CmdLineArgs {
 const TEMP_BUILD_DIR: &str = "temp_build_dir";
 const BUILD_TARGET: &str = "x86_64-pc-windows-msvc";
 
-fn clear_temp_dir(this_crate_dir: &Path) -> PathBuf {
-    let build_dir = this_crate_dir.join(TEMP_BUILD_DIR);
+fn clear_temp_dir(this_crate_dir: &Path, tested_crate_name: &str) -> PathBuf {
+    let build_dir = this_crate_dir.join(
+        String::from(TEMP_BUILD_DIR)
+            + "_"
+            + tested_crate_name
+            + "_"
+            + &format!("{}", Utc::now())
+                .replace(" ", "-")
+                .replace(":", "-")
+                .replace(".", "-"),
+    );
     if build_dir.exists() {
         std::fs::remove_dir_all(build_dir.as_path())
             .unwrap_or_else(|_| panic!("fail to remove {}", build_dir.display()));
@@ -57,13 +67,14 @@ fn clear_temp_dir(this_crate_dir: &Path) -> PathBuf {
 fn gen_compiled_file(
     this_crate_dir: &Path,
     tested_crate_dir: &Path,
+    test_crate_name: &str,
     tested_features: &Vec<String>,
     emit_type: EmitType,
-) {
+) -> PathBuf {
     assert!(this_crate_dir.is_absolute());
     assert!(tested_crate_dir.is_absolute());
 
-    let build_dir = clear_temp_dir(this_crate_dir);
+    let build_dir = clear_temp_dir(this_crate_dir, test_crate_name);
     std::env::set_current_dir(tested_crate_dir)
         .unwrap_or_else(|_| panic!("fail to set current dir to {}", tested_crate_dir.display()));
 
@@ -74,7 +85,7 @@ fn gen_compiled_file(
         cmd.arg("--features");
         cmd.arg(feature);
     }
-    cmd.arg("--target-dir").arg(build_dir);
+    cmd.arg("--target-dir").arg(build_dir.clone());
     cmd.arg("--target").arg(BUILD_TARGET);
     cmd.arg("--").arg("--emit").arg(match emit_type {
         EmitType::Asm => "asm",
@@ -86,17 +97,19 @@ fn gen_compiled_file(
 
     std::env::set_current_dir(this_crate_dir)
         .unwrap_or_else(|_| panic!("fail to set current dir to {}", this_crate_dir.display()));
+    build_dir
 }
 
 fn compiled_file(
     this_crate_dir: &Path,
     emit_type: EmitType,
+    build_dir: &Path,
     test_crate_name: &str,
 ) -> Result<PathBuf> {
     assert!(this_crate_dir.is_absolute());
 
     let emit_file_pat = this_crate_dir
-        .join(TEMP_BUILD_DIR)
+        .join(build_dir)
         .join(BUILD_TARGET)
         .join("debug")
         .join("deps")
@@ -119,7 +132,14 @@ fn compiled_file(
     )? {
         files.push(entry?);
     }
-    assert!(files.len() == 1);
+    if files.len() != 1 {
+        if files.len() == 0 {
+            println!("emit file {} not found", emit_file_pat.display());
+        } else {
+            println!("multiple emit file {} found", emit_file_pat.display());
+        }
+        assert!(files.len() == 1);
+    }
 
     Ok(files[0].clone())
 }
@@ -148,10 +168,16 @@ fn test_asm_or_mir(
     emit_type: EmitType,
     std_math_patterns: Regex,
 ) -> Result<bool> {
-    gen_compiled_file(this_crate_dir, tested_crate_dir, tested_features, emit_type);
-    let compiled_file = compiled_file(this_crate_dir, emit_type, test_crate_name)?;
+    let build_dir = gen_compiled_file(
+        this_crate_dir,
+        tested_crate_dir,
+        test_crate_name,
+        tested_features,
+        emit_type,
+    );
+    let compiled_file = compiled_file(this_crate_dir, emit_type, &build_dir, test_crate_name)?;
     let res = std_math_used(std_math_patterns, &compiled_file);
-    clear_temp_dir(this_crate_dir);
+    clear_temp_dir(this_crate_dir, test_crate_name);
     res
 }
 

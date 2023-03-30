@@ -10,4 +10,4 @@ Cargo.lock
 **/*.rs.bk
 
 # temp compiled file of checked crate
-/temp_build_dir/
+/temp*

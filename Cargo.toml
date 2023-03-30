@@ -20,6 +20,7 @@ glob = "0.3.0"
 fancy-regex = "0.11.0"
 clap = { version = "3", default-features = false, features = ["cargo", "std"] }
 cargo_toml = "0.15.2"
+chrono = "0.4"
 
 
 [workspace]
