@@ -125,6 +125,7 @@ fn compiled_file(
         } else {
             println!("multiple emit file {} found", emit_file_pat.display());
         }
+        clear_temp_dir(build_dir);
         assert!(files.len() == 1);
     }
 
