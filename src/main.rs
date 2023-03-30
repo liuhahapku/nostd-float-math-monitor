@@ -43,38 +43,26 @@ struct CmdLineArgs {
     pub tested_features: Vec<String>,
 }
 
-const TEMP_BUILD_DIR: &str = "temp_build_dir";
 const BUILD_TARGET: &str = "x86_64-pc-windows-msvc";
 
-fn clear_temp_dir(this_crate_dir: &Path, tested_crate_name: &str) -> PathBuf {
-    let build_dir = this_crate_dir.join(
-        String::from(TEMP_BUILD_DIR)
-            + "_"
-            + tested_crate_name
-            + "_"
-            + &format!("{}", Utc::now())
-                .replace(" ", "-")
-                .replace(":", "-")
-                .replace(".", "-"),
-    );
+fn clear_temp_dir(build_dir: &Path) {
     if build_dir.exists() {
-        std::fs::remove_dir_all(build_dir.as_path())
+        std::fs::remove_dir_all(build_dir)
             .unwrap_or_else(|_| panic!("fail to remove {}", build_dir.display()));
     }
-    build_dir
 }
 
 fn gen_compiled_file(
     this_crate_dir: &Path,
     tested_crate_dir: &Path,
-    test_crate_name: &str,
     tested_features: &Vec<String>,
+    build_dir: &Path,
     emit_type: EmitType,
-) -> PathBuf {
+) {
     assert!(this_crate_dir.is_absolute());
     assert!(tested_crate_dir.is_absolute());
 
-    let build_dir = clear_temp_dir(this_crate_dir, test_crate_name);
+    clear_temp_dir(build_dir);
     std::env::set_current_dir(tested_crate_dir)
         .unwrap_or_else(|_| panic!("fail to set current dir to {}", tested_crate_dir.display()));
 
@@ -85,7 +73,7 @@ fn gen_compiled_file(
         cmd.arg("--features");
         cmd.arg(feature);
     }
-    cmd.arg("--target-dir").arg(build_dir.clone());
+    cmd.arg("--target-dir").arg(build_dir);
     cmd.arg("--target").arg(BUILD_TARGET);
     cmd.arg("--").arg("--emit").arg(match emit_type {
         EmitType::Asm => "asm",
@@ -97,14 +85,13 @@ fn gen_compiled_file(
 
     std::env::set_current_dir(this_crate_dir)
         .unwrap_or_else(|_| panic!("fail to set current dir to {}", this_crate_dir.display()));
-    build_dir
 }
 
 fn compiled_file(
     this_crate_dir: &Path,
     emit_type: EmitType,
     build_dir: &Path,
-    test_crate_name: &str,
+    tested_crate_name: &str,
 ) -> Result<PathBuf> {
     assert!(this_crate_dir.is_absolute());
 
@@ -114,7 +101,7 @@ fn compiled_file(
         .join("debug")
         .join("deps")
         .join(
-            String::from(test_crate_name)
+            String::from(tested_crate_name)
                 + "*."
                 + match emit_type {
                     EmitType::Asm => "s",
@@ -133,7 +120,7 @@ fn compiled_file(
         files.push(entry?);
     }
     if files.len() != 1 {
-        if files.len() == 0 {
+        if files.is_empty() {
             println!("emit file {} not found", emit_file_pat.display());
         } else {
             println!("multiple emit file {} found", emit_file_pat.display());
@@ -167,17 +154,18 @@ fn test_asm_or_mir(
     tested_features: &Vec<String>,
     emit_type: EmitType,
     std_math_patterns: Regex,
+    build_dir: &Path,
 ) -> Result<bool> {
-    let build_dir = gen_compiled_file(
+    gen_compiled_file(
         this_crate_dir,
         tested_crate_dir,
-        test_crate_name,
         tested_features,
+        build_dir,
         emit_type,
     );
-    let compiled_file = compiled_file(this_crate_dir, emit_type, &build_dir, test_crate_name)?;
+    let compiled_file = compiled_file(this_crate_dir, emit_type, build_dir, test_crate_name)?;
     let res = std_math_used(std_math_patterns, &compiled_file);
-    clear_temp_dir(this_crate_dir, test_crate_name);
+    clear_temp_dir(build_dir);
     res
 }
 
@@ -245,6 +233,13 @@ fn main() -> Result<()> {
             r"std::(f32|f64)::impl\$[0-9]+::(abs|abs_sub|acos|acosh|asin|asinh|atan|atan2|atanh|cbrt|ceil|copysign|cos|cosh|div_euclid|exp|exp2|exp_m1|floor|fract|hypot|ln|ln_1p|log|log10|log2|mul_add|powf|powi|rem_euclid|round|signum|sin|sin_cos|sinh|sqrt|tan|tanh|trunc)"
         )
         .unwrap();
+    let build_dir = current_dir.join(
+        String::from("temp_build_dir")
+            + "_"
+            + &args.tested_package_name
+            + "_"
+            + &format!("{}", Utc::now()).replace([' ', ':', '.'], "-"),
+    );
 
     let std_math_used_in_mir = test_asm_or_mir(
         &current_dir,
@@ -253,6 +248,7 @@ fn main() -> Result<()> {
         &tested_features,
         EmitType::Mir,
         mir_pattern,
+        &build_dir,
     )
     .unwrap();
 
@@ -263,6 +259,7 @@ fn main() -> Result<()> {
         &tested_features,
         EmitType::Asm,
         asm_pattern,
+        &build_dir,
     )
     .unwrap();
 
